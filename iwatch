@@ -188,6 +188,7 @@ sub getopt_spec {
     $self->{'events'}      = [];
     $self->{'max_child'}   = 5;
     $self->{'max_load'}    = 20;
+    $self->{'write_xml'}   = 0;
     $self->{'load_metric'} = LOADAVG_1MIN;
     $self->{'recursive'}   = 0;
     $self->{'alert'}       = 0;
@@ -199,6 +200,7 @@ sub getopt_spec {
     return (
 	'help|h'         => $self->usage,
 	'config|f=s'     => \$self->{'configfile'},
+	'gen-config'     => \$self->{'write_xml'},
 	'watch|w=s'      => \$self->{'watch_path'},
 	'command|c=s'    => \$self->{'command'},
 	'charset=s'      => \$self->{'charset'},
@@ -243,7 +245,7 @@ sub email_alert                 { $_[0]->{'alert'};               }
 sub use_syslog                  { $_[0]->{'syslog'};              }
 sub exception                   { $_[0]->{'exception'};           }
 sub exception_regexp            { $_[0]->{'exception_regexp'};    }
-
+sub generate_xml                { $_[0]->{'write_xml'};           }
 sub watch_path {
     my ($self) = @_;
     my ($path) = grep { defined($_) && -e $_ } $self->{'watch_path'}, @ARGV;
@@ -292,8 +294,11 @@ sub main {
     openlog("$PROGRAM", 'cons,pid', 'user');
    
     if($self->watch_path) {
-	$VERBOSE  += 1;
 	my $xmlstr = $self->generate_xml_string();
+	if ($self->generate_xml) {
+	    print STDOUT "$xmlstr\n";
+	    exit 0;
+	}
 	$xmlobj    = XML::SimpleObject::LibXML->new (XML => "$xmlstr");
     } else {
 	$xmlobj = $self->getXmlObject($self->config_file);
@@ -308,15 +313,15 @@ sub main {
 		       my $event = shift;
 		       ## REAPER
 		       for(my $i = 0; $i < $event->hits; ++$i) {
-			#   my $sigset = POSIX::SigSet->new(&POSIX::SIGCHLD);
-			#   sigprocmask(SIG_BLOCK, $sigset)
-			#       or die "Can't block SIGCHLD for reaper: $!\n";
+			   my $sigset = POSIX::SigSet->new(&POSIX::SIGCHLD);
+			   sigprocmask(SIG_BLOCK, $sigset)
+			       or die "Can't block SIGCHLD for reaper: $!\n";
 			   my $pid = wait;
 			   if (delete $CHILDREN_G{$pid}) {
 			       warn "$pid removed\n";
 			       $CHILDREN_G--;
 			   }
-			#   sigprocmask(SIG_UNBLOCK, $sigset);
+			   sigprocmask(SIG_UNBLOCK, $sigset);
 		       }
 		   });
 
