@@ -53,7 +53,7 @@ use warnings;
     };
     my $regexp_string  = join("|", map { "%".quotemeta } keys(%$formats));
     my $formats_regexp = qr/$regexp_string/;
-    sub _regexp         { return $formats_regexp; }
+    sub _formats_regexp { return $formats_regexp; }
     sub _function_table { return $formats;        }
 }
 sub new { 
@@ -62,8 +62,6 @@ sub new {
     my $self    = bless { 
 	_c     => $cookies || {}, 
 	name   => '',
-	regexp => iWatch::Event::_regexp(),
-	format => iWatch::Event::_function_table(),
     }, $class;
     return $self;
 }
@@ -73,7 +71,6 @@ sub name          :lvalue { $_[0]->{'name'};        }
 sub cookie        :lvalue { $_[0]->{'cookie'};      }
 sub cookies       :lvalue { $_[0]->{'_c'};          }
 sub old_filename          { $_[0]->{'oldfilename'}; }
-sub formats_regexp        { $_[0]->{'regexp'};      }
 
 sub handle_moved_from {
     my $self = shift;
@@ -101,7 +98,7 @@ sub _filename {
 
 sub apply_to_command {
   my ($self, $command) = @_;
-  my $regexp = $self->formats_regexp;
+  my $regexp = $self->_formats_regexp;
   my $format = $self->_function_table;
   $command   =~ s/$regexp/_stringf($&, $format, $self)/ge;
   return $command;
