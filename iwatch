@@ -8,101 +8,21 @@
 # iWatch monitor any changes in directories/files specified
 # in the configuration file, and send email alert.
 # This program needs inotify in linux kernel >= 2.6.13  
-
-package iWatch::Utils;
-
-use strict;
-use warnings;
-use Linux::Inotify2; ## for constants
-
-my $PROGRAM = "iWatch";
-my $VERSION = "0.2.2";
-
-our %InotifyEvents = (
-    'access'        => IN_ACCESS,
-    'modify'        => IN_MODIFY,
-    'attrib'        => IN_ATTRIB,
-    'close_write'   => IN_CLOSE_WRITE,
-    'close_nowrite' => IN_CLOSE_NOWRITE,
-    'open'          => IN_OPEN,
-    'moved_from'    => IN_MOVED_FROM,
-    'moved_to'      => IN_MOVED_TO,
-    'create'        => IN_CREATE,
-    'delete'        => IN_DELETE,
-    'delete_self'   => IN_DELETE_SELF,
-    'move_self'     => IN_MOVE_SELF,
-    'unmount'       => IN_UNMOUNT,
-    'q_overflow'    => IN_Q_OVERFLOW,
-    'ignored'       => IN_IGNORED,
-    'close'         => IN_CLOSE,
-    'move'          => IN_MOVE,
-    'isdir'         => IN_ISDIR,
-    'oneshot'       => IN_ONESHOT,
-    'all_events'    => IN_ALL_EVENTS,
-    'default'       => IN_CLOSE_WRITE|IN_CREATE|IN_DELETE|IN_MOVE|IN_DELETE_SELF|IN_MOVE_SELF,
-    );
-
-my $formats = {
-    'p' => sub { $PROGRAM },
-    'v' => sub { $VERSION },
-    'f' => sub { 
-	my $event = shift;
-	$event->{'Filename'} =~ s/([;<>\*\|`&\$!#\(\)\[\]\{\}:'" \\])/\\$1/g; 
-	return $event->{'Filename'}; 
-    },
-    'F' => sub {
-	my $event = shift;
-	return '' if($event->{'Name'} !~ /MOVED_TO/ );
-	$event->{'OldFilename'} =~ s/([;<>\*\|`&\$!#\(\)\[\]\{\}:'" \\])/\\$1/g;
-	return $event->{'OldFilename'};
-    },
-    'e' => sub { my $event = shift; return $event->{'Name'};   },
-    'c' => sub { my $event = shift; return $event->{'Cookie'}; },
-    };
-
-my $regexp_string  = join("|", map { "%".quotemeta } keys(%$formats));
-my $formats_regexp = qr/$regexp_string/;
-
-sub stringf($$) {
-  my ($string, $event) = @_;
-  $string =~ s/$formats_regexp/_stringf($&, $formats, $event)/ge;
-  $string;
-}
- 
-sub _stringf {
-  my ($s, $f, $e) = @_;
-  $s =~ s/^\%//;
-  $f->{$s}->($e);
-}
-
-1;
-
-package iWatch::Event;
-use strict;
-use warnings;
-
-sub new       { bless { _c => $_[1] || {} }, $_[0]; }
-
-sub filename      :lvalue { $_[0]->{'Filename'};    }
-sub name          :lvalue { $_[0]->{'Name'};        }
-sub cookie        :lvalue { $_[0]->{'Cookie'};      }
-sub cookies       :lvalue { $_[0]->{'_c'};          }
-
-sub handle_moved_from {
-    my $self = shift;
-    $self->cookies->{ $self->cookie } = $self->filename;
-}
-sub handle_moved_to {
-    my $self = shift;
-    $self->{'OldFilename'} = delete( $self->cookies->{ $self->cookie} );
-    return $self->{'OldFilename'};
-}
-
-1;
 package iWatch;
 
 use strict;
 use warnings;
+
+my $PROGRAM = "iWatch";
+my $VERSION = "0.2.2";
+
+my $VERBOSE      = 0;
+my $CONFIGFILE_G = "/etc/iwatch.xml";
+my $PIDFILE_G    = "/var/run/iwatch.pid";
+my $CHARSET_G    = "utf-8";
+
+my $CHILDREN_G = 0;
+my %CHILDREN_G = ();
 
 sub new { 
     bless { 
@@ -116,6 +36,83 @@ sub charset   :lvalue { $_[0]->{'charset'};   }
 sub mail      :lvalue { $_[0]->{'mail'};      }
 sub watchlist :lvalue { $_[0]->{'watchlist'}; }
 sub event     :lvalue { $_[0]->{'event'};     }
+
+1;
+
+package iWatch::Event;
+use strict;
+use warnings;
+{
+    my $formats = {
+	'p' => sub { $PROGRAM },
+	'v' => sub { $VERSION },
+	'f' => sub { _filename( @_ )      },
+	'F' => sub { _old_filename( @_ ); },
+	'e' => sub { name( @_ );      },
+	'c' => sub { cookie( @_ );    },
+    };
+    my $regexp_string  = join("|", map { "%".quotemeta } keys(%$formats));
+    my $formats_regexp = qr/$regexp_string/;
+    sub _regexp         { return $formats_regexp; }
+    sub _function_table { return $formats;        }
+}
+sub new { 
+    my $class   = shift;
+    my $cookies = shift;
+    my $self    = bless { 
+	_c     => $cookies || {}, 
+	name   => '',
+	regexp => iWatch::Event::_regexp(),
+	format => iWatch::Event::_function_table(),
+    }, $class;
+    return $self;
+}
+
+sub filename      :lvalue { $_[0]->{'filename'};    }
+sub name          :lvalue { $_[0]->{'name'};        }
+sub cookie        :lvalue { $_[0]->{'cookie'};      }
+sub cookies       :lvalue { $_[0]->{'_c'};          }
+sub old_filename          { $_[0]->{'oldfilename'}; }
+sub formats_regexp        { $_[0]->{'regexp'};      }
+
+sub handle_moved_from {
+    my $self = shift;
+    $self->cookies->{ $self->cookie } = $self->filename;
+}
+sub handle_moved_to {
+    my $self = shift;
+    $self->{'oldfilename'} = delete( $self->cookies->{ $self->cookie} );
+    return $self->{'oldfilename'};
+}
+
+sub _old_filename {
+    my $self   = shift;
+    my $retval = '';
+    return $retval if($self->name !~ /MOVED_TO/ );
+    ($retval = $self->old_filename) =~ s/([;<>\*\|`&\$!#\(\)\[\]\{\}:'" \\])/\\$1/g;
+    return $retval;
+}
+sub _filename {
+    my $self = shift;
+    my $retval; ($retval = $self->filename) 
+	=~ s/([;<>\*\|`&\$!#\(\)\[\]\{\}:'" \\])/\\$1/g; 
+    return $retval;
+}
+
+sub apply_to_command {
+  my ($self, $command) = @_;
+  my $regexp = $self->formats_regexp;
+  my $format = $self->_function_table;
+  $command   =~ s/$regexp/_stringf($&, $format, $self)/ge;
+  return $command;
+}
+ 
+sub _stringf {
+  my ($s, $f, $e) = @_;
+  $s =~ s/^\%//;
+  $f->{$s}->($e);
+}
+
 1;
 
 package App::iWatch;
@@ -135,14 +132,6 @@ use Sys::Hostname;
 use Sys::Syslog;
 use Sys::LoadAvg qw{loadavg LOADAVG_1MIN LOADAVG_5MIN LOADAVG_15MIN};
 
-my $VERBOSE      = 0;
-my $CONFIGFILE_G = "/etc/iwatch.xml";
-my $PIDFILE_G    = "/var/run/iwatch.pid";
-my $CHARSET_G    = "utf-8";
-
-my $CHILDREN_G = 0;
-my %CHILDREN_G = ();
-
 sub new {
     my $class = shift;
     my $self  = bless {
@@ -155,12 +144,38 @@ sub new {
 	iwatch              => iWatch->new(),
     }, ref($class) || $class;
 
+    my %InotifyEvents = (
+	'access'        => IN_ACCESS,
+	'modify'        => IN_MODIFY,
+	'attrib'        => IN_ATTRIB,
+	'close_write'   => IN_CLOSE_WRITE,
+	'close_nowrite' => IN_CLOSE_NOWRITE,
+	'open'          => IN_OPEN,
+	'moved_from'    => IN_MOVED_FROM,
+	'moved_to'      => IN_MOVED_TO,
+	'create'        => IN_CREATE,
+	'delete'        => IN_DELETE,
+	'delete_self'   => IN_DELETE_SELF,
+	'move_self'     => IN_MOVE_SELF,
+	'unmount'       => IN_UNMOUNT,
+	'q_overflow'    => IN_Q_OVERFLOW,
+	'ignored'       => IN_IGNORED,
+	'close'         => IN_CLOSE,
+	'move'          => IN_MOVE,
+	'isdir'         => IN_ISDIR,
+	'oneshot'       => IN_ONESHOT,
+	'all_events'    => IN_ALL_EVENTS,
+	'default'       => IN_CLOSE_WRITE|IN_CREATE|IN_DELETE|IN_MOVE|IN_DELETE_SELF|IN_MOVE_SELF,
+	);
+
     my $InotifyEventNames = $self->inotify_event_names;
-    my %InotifyEvents     = $self->inotify_events;
+    $self->inotify_events = \%InotifyEvents;
 
     foreach my $EventName (keys %InotifyEvents) {
 	$InotifyEventNames->{$InotifyEvents{$EventName}} = "IN_\U$EventName";
     }
+
+    $self->update_load;
 
     delete @ENV{qw(ENV IFS CDPATH)};
     $ENV{PATH} = "/bin:/usr/bin:/usr/sbin";
@@ -205,10 +220,16 @@ sub charset                     { $_[0]->{'charset'};             }
 sub verbose                     { $_[0]->{'verbose'};             }
 sub command             :lvalue { $_[0]->{'command'};             }
 sub inotify             :lvalue { $_[0]->{'inotify'};             }
-sub inotify_events              { %iWatch::Utils::InotifyEvents;  }
-sub inotify_event_names :lvalue { $_[0]->{'inotify_event_names'}; }
+sub inotify_events      :lvalue { $_[0]->{'inotify_events'};      }
+sub inotify_event_names         { $_[0]->{'inotify_event_names'}; }
 sub iwatch                      { $_[0]->{'iwatch'};              }
 sub queue               :lvalue { $_[0]->{'queue'};               }
+sub load_avg                    { $_[0]->{'load_avg'};            }
+
+sub update_load {
+    my $self = shift;
+    $self->{'load_avg'} = [ loadavg() ];
+}
 
 sub pid_file { 
     my $p;
@@ -264,8 +285,7 @@ sub main {
 	$VERBOSE  += 1;
 	my $xmlstr = $self->generate_xml_string();
 	$xmlobj    = XML::SimpleObject::LibXML->new (XML => "$xmlstr");
-    }
-    else {
+    } else {
 	$xmlobj = $self->getXmlObject($self->config_file);
     }
     
@@ -275,15 +295,19 @@ sub main {
 
     Event->signal (signal => 'CHLD',
 		   cb     => sub {
+		       my $event = shift;
 		       ## REAPER
-		       my $sigset = POSIX::SigSet->new(&POSIX::SIGCHLD);
-		       sigprocmask(SIG_BLOCK, $sigset)
-			   or die "Can't block SIGCHLD for reaper: $!\n";
-		       my $pid = wait;
-		       if (delete $CHILDREN_G{$pid}) {
-			   $CHILDREN_G--;
+		       for(my $i = 0; $i < $event->hits; ++$i) {
+			#   my $sigset = POSIX::SigSet->new(&POSIX::SIGCHLD);
+			#   sigprocmask(SIG_BLOCK, $sigset)
+			#       or die "Can't block SIGCHLD for reaper: $!\n";
+			   my $pid = wait;
+			   if (delete $CHILDREN_G{$pid}) {
+			       warn "$pid removed\n";
+			       $CHILDREN_G--;
+			   }
+			#   sigprocmask(SIG_UNBLOCK, $sigset);
 		       }
-		       sigprocmask(SIG_UNBLOCK, $sigset);
 		   });
 
     Event->signal (signal => 'INT',
@@ -296,6 +320,7 @@ sub main {
     
     Event->signal (signal => 'HUP', 
 		   cb     => sub {
+		       ## RE-CONFIGURE
 		       my $xmlobj = $self->getXmlObject($self->config_file);
 		       while(my ($key, $watch) = each (%{$inotify->{'w'}}))
 		       {
@@ -304,27 +329,37 @@ sub main {
 		       $self->xmlDispatch($xmlobj);
 		   })
 	if(!(defined $options{w} || -e $ARGV[0]));
-    
+
+    my $itrn = 0;
     $self->xmlDispatch($xmlobj);
     Event->io (fd => $inotify->fileno, poll => 'r', cb => sub { $inotify->poll });
-    Event->timer(interval => 1, cb => sub { $self->_dispatch_queue(); });
+    Event->timer(interval => 1, cb => sub { $self->_dispatch_queue(++$itrn);   }); 
     Event::loop;
 }
 
 sub _dispatch_queue {
     my $self  = shift;
+    my $itrn  = shift;
     my $queue = $self->queue;
     my $MAX   = $self->max;
     my $last  = ($MAX > @$queue ? @$queue : $MAX);
-    my $count = $CHILDREN_G;
+    my $count = ($CHILDREN_G ? $CHILDREN_G - 1 : $CHILDREN_G);
 
-    $self->message(0, '-', sprintf "timer went off - we have %d entries in queue", scalar(@$queue));
-    
-    for(my $i = $count; $i < $last; ++$i) {
+    my $load     = $self->load_avg->[ $self->{'load_metric'} ];
+    my $max_load = 20.0;
+
+    $self->message(0, '-', sprintf("we have %d entries in queue and %d children last=%d, load=%.2f",
+				   scalar(@$queue), $CHILDREN_G, $last, $load));
+
+    for(my $i = $count; $load < $max_load && $i < $last; ++$i) {
 	my $cmd = shift @$queue;
 	$self->message(0, '_spawn_child', $cmd);
 	_spawn_child( $cmd );
     }
+
+    kill 'CHLD', $$ unless $itrn % 40; ## holes in the block logic / signal impl.
+
+    $self->update_load unless $itrn % 120; ## 2 minutes ~ish
 }
 
 sub getXmlObject {
@@ -352,7 +387,7 @@ sub xmlDispatch {
     my $iwatch   = $self->iwatch;
     my %WatchList;
     my %Mail;
-    my %InotifyEvents = $self->inotify_events;
+    my %InotifyEvents = %{ $self->inotify_events };
 
     $iwatch->charset = $xmlobj->child("config")->attribute("charset");
 		my $inotify = $self->inotify;
@@ -503,6 +538,7 @@ sub mywatch {
     my $mask;
     my %WatchList = %{ $iwatch->watchlist };
     my %Mail      = %{ $iwatch->mail };
+    my %InotifyEvents = %{ $self->inotify_events };
 
     my $ievent   = $iwatch->event = 
 	iWatch::Event->new($iwatch->event->cookies);
@@ -514,7 +550,6 @@ sub mywatch {
     return if(!defined($Path));
   
     my $now = POSIX::strftime "%e/%b/%Y %H:%M:%S", localtime;
-    $ievent->name = "";
     $mask = $e->mask;
     if($e->IN_ISDIR) {
 	$mask ^= IN_ISDIR;
@@ -558,6 +593,7 @@ sub mywatch {
     } elsif($e->IN_MOVED_FROM || $e->IN_MOVED_TO) {
 	if($e->IN_MOVED_FROM) {
 	    ## store the old filename
+	    $ievent->cookie = $e->{'cookie'};
 	    $ievent->handle_moved_from();
 	} elsif($e->IN_MOVED_TO) {
 	    $self->message(0, $now, sprintf "* cookie is %d", $e->{'cookie'});
@@ -588,7 +624,7 @@ sub mywatch {
     }
     $Path->{'exec'} = qq{echo [$now] p=\%p v=\%v ev=\%e file=\%f c=\%c old-file=\%F};
     if(defined($Path->{exec})) {
-	my $command = iWatch::Utils::stringf("$Path->{exec}", $iwatch->event);
+	my $command = $ievent->apply_to_command($Path->{exec});
 	$self->message(0, $now, "* Command: $command");
 	syslog("info","* Command: $command") if($Path->{'syslog'});
 	# We have already backslashed the escape characters in $Filename (in %formats).
@@ -671,10 +707,10 @@ sub _spawn_child {
 	    sub { print STDERR "Received SIGHUP, child $$ resigning\n"; exit; };
 
 	sigprocmask(SIG_BLOCK, $sigset2)
-	    or die "Can't block SIGHUP for request: $!\n";
+	    or die "Can't block SIGHUP while running command: $!\n";
 	my $sigset_CHLD = POSIX::SigSet->new(&POSIX::SIGCHLD);
 	sigprocmask(SIG_BLOCK, $sigset_CHLD)
-	    or die "Can't block SIGCHLD for THIS BIT: $!\n";
+	    or die "Can't block SIGCHLD while running command: $!\n";
 
 	open(my $fh, '-|', $cmd);
 	while (<$fh>) {
@@ -684,10 +720,9 @@ sub _spawn_child {
 	close $fh;
 
 	sigprocmask(SIG_UNBLOCK, $sigset_CHLD)
-	    or die "Can't unblock SIGCHLD after request: $!\n";
-	#      $SIG{CHLD} = \&REAPER;
+	    or die "Can't unblock SIGCHLD after command: $!\n";
 	sigprocmask(SIG_UNBLOCK, $sigset2)
-	    or die "Can't unblock SIGHUP after request: $!\n";
+	    or die "Can't unblock SIGHUP after command: $!\n";
 
 	exit 0;
     }
@@ -712,7 +747,6 @@ sub script_version {
     };
 }
 
-
 exit ( __PACKAGE__->main( @ARGV ) ) unless caller();
 
 =pod
@@ -734,10 +768,12 @@ on filesystem events that are received.
 
  iwatch [options] 
 
+ iwatch [-d] [-f <config file>] [-v] [-p <pid file>]
+
 Where options and [defaults] are:
 
-In the daemon mode, $PROGRAM has following options:
-Usage: iwatch [-d] [-f <config file>] [-v] [-p <pid file>]
+In the daemon mode, iwatch has following options:
+
   -d Execute the application as daemon.
   -f <config file>
      Specify an alternate xml configuration file.
@@ -749,12 +785,11 @@ Usage: iwatch [-d] [-f <config file>] [-v] [-p <pid file>]
 
  iwatch [options]
 
-Where options and [defaults] are:
-
-And in the command line mode:
-Usage: iwatch [-c command] [-C charset] [-e event[,event[,..]]] [-h|--help] [-m <email address>] 
+ iwatch [-c command] [-C charset] [-e event[,event[,..]]] [-h|--help] [-m <email address>] 
          [-r] [-s <on|off>] [-t <filter string>] [-v] [--version] [-x exception]
          [-X <regex string as exception>] <target>
+
+Where options and [defaults] are:
 
   Target is the directory or file you want to monitor.
   -c command
