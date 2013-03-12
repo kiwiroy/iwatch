@@ -657,10 +657,9 @@ sub mywatch {
 
 sub generate_xml_string {
     my ($self) = @_;
-    my $user   = 
     my @xmlstr;
     push @xmlstr, sprintf(q{<config charset="%s">}, $self->charset);
-    push @xmlstr, sprintf(q{  <guard email="%s@localhost"/>}, $user);
+    push @xmlstr, sprintf(q{  <guard email="%s@localhost"/>}, $self->{'user'});
     push @xmlstr, sprintf(q{  <watchlist>});
     push @xmlstr, sprintf(q{    <contactpoint email="%s"/>}, $self->email);
     push @xmlstr, sprintf(q{    <path });
