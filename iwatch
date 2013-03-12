@@ -212,7 +212,7 @@ sub getopt_spec {
 	'version'        => $self->script_version,
 	'except|x=s'     => \$self->{'exception'},
 	'reg-except|X=s' => \$self->{'exception_regexp'},
-	'pidfile=s'      => \$self->{'pidfile'},
+	'pidfile|p=s'    => \$self->{'pidfile'},
 	'max-child=i'    => \$self->{'max_child'},
 	'max-load=i'     => \$self->{'max_load'},
 	'1'              => sub { $self->{'load_metric'} = LOADAVG_1MIN;  },
@@ -287,23 +287,10 @@ sub main {
     my $self = $pkg->new();
     my $xmlobj;
 
-    my %options=();
-
-    my $opt = GetOptions($self->getopt_spec);
+    GetOptions( $self->getopt_spec );
     
     openlog("$PROGRAM", 'cons,pid', 'user');
    
-    $VERBOSE += 2 if $self->verbose;
-    
-    ## FIX ME - Sanity check
-    if((defined $options{d} || defined $options{f} || defined $options{p}) && 
-       (-e $ARGV[0] || defined $options{c} || defined $options{C} || defined $options{e} || defined $options{m} 
-	|| defined $options{r} || defined $options{s} || defined $options{t} || defined $options{w} || defined $options{x} | defined $options{X})) {
-	print STDERR "Options [d|f|p] and [c|e|m|r|s|w|x] are mutually exlusive, you can't mix it!\n";
-	$self->usage->();
-    }
-    
-
     if($self->watch_path) {
 	$VERBOSE  += 1;
 	my $xmlstr = $self->generate_xml_string();
