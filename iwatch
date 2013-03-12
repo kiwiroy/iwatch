@@ -42,6 +42,7 @@ sub event     :lvalue { $_[0]->{'event'};     }
 package iWatch::Event;
 use strict;
 use warnings;
+use POSIX qw{strftime};
 {
     my $formats = {
 	'p' => sub { $PROGRAM },
@@ -62,6 +63,7 @@ sub new {
     my $self    = bless { 
 	_c     => $cookies || {}, 
 	name   => '',
+	now    => strftime( "%e/%b/%Y %H:%M:%S", localtime ),
     }, $class;
     return $self;
 }
@@ -71,7 +73,7 @@ sub name          :lvalue { $_[0]->{'name'};        }
 sub cookie        :lvalue { $_[0]->{'cookie'};      }
 sub cookies       :lvalue { $_[0]->{'_c'};          }
 sub old_filename          { $_[0]->{'oldfilename'}; }
-
+sub now                   { $_[0]->{'now'};         }
 sub handle_moved_from {
     my $self = shift;
     $self->cookies->{ $self->cookie } = $self->filename;
@@ -554,25 +556,21 @@ sub message {
 
 sub mywatch {
     my ($self, $e) = @_;
-    my $inotify = $self->inotify;
-    my $iwatch  = $self->iwatch;
-    my $Message;
-    my $localMessage;
-    my $mask;
-    my %WatchList = %{ $iwatch->watchlist };
-    my %Mail      = %{ $iwatch->mail };
+    my ($syslog_message, $mail_subject, $mask);
+    my $inotify       = $self->inotify;
+    my $iwatch        = $self->iwatch;
+    my %WatchList     = %{ $iwatch->watchlist };
+    my %Mail          = %{ $iwatch->mail };
     my %InotifyEvents = %{ $self->inotify_events };
-
-    my $ievent   = $iwatch->event = 
+    my $ievent        = $iwatch->event = 
 	iWatch::Event->new($iwatch->event->cookies);
+    my $filename      = $iwatch->event->filename =
+	$e->fullname;
 
-    my $Filename = $iwatch->event->filename = $e->fullname;
-
-    return if(defined $WatchList{"exception"}{$Filename});
+    return if(defined $WatchList{"exception"}{$filename});
     my $Path = $self->getWatchList($e->{w}->{name}, $e->{name}, \%WatchList);
     return if(!defined($Path));
   
-    my $now = POSIX::strftime "%e/%b/%Y %H:%M:%S", localtime;
     $mask = $e->mask;
     if($e->IN_ISDIR) {
 	$mask ^= IN_ISDIR;
@@ -586,82 +584,79 @@ sub mywatch {
     $ievent->name  .= $self->inotify_event_names->{$mask};
     $ievent->cookie = $e->{cookie};
 
-    $Message = sprintf q{%s %s}, $ievent->name, $Filename;
-    $Mail{Subject} = "[$PROGRAM] " . hostname() . ": $Message";
     if($VERBOSE>0 && $Path->{'mask'} & $mask) {
-	$self->message(-1, $now, $Message);
-	syslog("info","$Message") if($Path->{'syslog'});
+	my $message = sprintf q{%s %s}, $ievent->name, $filename;
+	$self->message(-1, $ievent->now, $message);
+	syslog("info", $message) if($Path->{'syslog'});
     }
-    if($e->IN_CREATE && -d $Filename && $Path->{'type'} eq "recursive") {
-	$self->message(0, $now, "* Directory $Filename is watched");
-	syslog("info","* Directory $Filename is watched") if($Path->{'syslog'});
-	$self->message(-1, $now, "Can't watch $Filename: $!")
-	    if(!$inotify->watch ($Filename, $Path->{'mask'} | $InotifyEvents{'create'}, sub { $self->mywatch(@_) }));
+    if($e->IN_CREATE && -d $filename && $Path->{'type'} eq "recursive") {
+	$self->message(0, $ievent->now, "* Directory $filename is watched");
+	syslog("info","* Directory $filename is watched") if($Path->{'syslog'});
+	$self->message(-1, $ievent->now, "Can't watch $filename: $!")
+	    if(!$inotify->watch ($filename, $Path->{'mask'} | $InotifyEvents{'create'}, sub { $self->mywatch(@_) }));
     }
 
     return if(!($Path->{'mask'} & $mask));
 
-    if($e->IN_CLOSE_WRITE && -f $Filename) {
-	$localMessage  = "* $Filename is closed";
-	$Message       = join "\n", $Message, $localMessage;
-	$Mail{Subject} = "[$PROGRAM] " . hostname() . ": $Filename is changed";  
-	$self->message(0, $now, $localMessage);
-	syslog("info","$localMessage") if($Path->{'syslog'});
+    my $filename_is  = sub { return "$filename is @_"; };
+
+    if($e->IN_CLOSE_WRITE && -f $filename) {
+	$mail_subject   = $filename_is->("changed");  
+	$syslog_message = "* $mail_subject";
+	$self->message(0, $ievent->now, $syslog_message);
+	syslog("info","$syslog_message") if($Path->{'syslog'});
     } elsif($e->IN_DELETE) {
-	$localMessage = "* $Filename is deleted";
-	$Message = "$Message\n$localMessage";
-	$Mail{Subject} = "[$PROGRAM] " . hostname() . ": $Filename is deleted";  
-	$self->message(0, $now, $localMessage);
-	syslog("info","$localMessage") if($Path->{'syslog'});
+	$mail_subject   = $filename_is ->("deleted");
+	$syslog_message = "* $mail_subject";
+	$self->message(0, $ievent->now, $syslog_message);
+	syslog("info","$syslog_message") if($Path->{'syslog'});
     } elsif($e->IN_MOVED_FROM || $e->IN_MOVED_TO) {
 	if($e->IN_MOVED_FROM) {
 	    ## store the old filename
 	    $ievent->cookie = $e->{'cookie'};
 	    $ievent->handle_moved_from();
 	} elsif($e->IN_MOVED_TO) {
-	    $self->message(0, $now, sprintf "* cookie is %d", $e->{'cookie'});
+	    $self->message(0, $ievent->now, sprintf "* cookie is %d", $e->{'cookie'});
 	    my $old_filename = $ievent->handle_moved_to;
-	    $localMessage  = sprintf(q{* %s is moved to %s},
-				     $old_filename,
-				     $Filename);
-	    $Message       = "$Message\n$localMessage";
-	    $Mail{Subject} = sprintf(q{[%s] %s: %s is moved to %s}, 
-				     $PROGRAM, hostname(),
-				     $old_filename,
-				     $Filename);
-	    $self->message(0, $now, $localMessage);
-	    syslog("info","$localMessage") if($Path->{'syslog'});
+	    $mail_subject    = sprintf(q{%s is moved to %s}, $old_filename, $filename);
+	    $syslog_message  = "* $mail_subject";
+	    $self->message(0, $ievent->now, $syslog_message);
+	    syslog("info","$syslog_message") if($Path->{'syslog'});
 	    if($e->IN_ISDIR) {
 		our $mask;
 		$mask = ($Path->{'type'} eq "recursive")? $Path->{'mask'} | $InotifyEvents{'create'} : $Path->{'mask'};
-		$self->pathwatch($Path->{'type'}, $Filename, %WatchList);
+		$self->pathwatch($Path->{'type'}, $filename, %WatchList);
 	    }
 	}
-    } elsif($e->IN_DELETE_SELF && -f $Filename && defined $WatchList{$Filename}) {
-	$localMessage = "* $Filename is replaced but watched again";
-	$Message = "$Message\n$localMessage";
-	$Mail{Subject} = "[$PROGRAM] " . hostname() . ": $Filename is replaced";  
-	$self->message(0, $now, $localMessage);
-	syslog("info","$localMessage") if($Path->{'syslog'});
-	$inotify->watch ("$Filename", $Path->{'mask'}, sub { $self->mywatch(@_)});
+    } elsif($e->IN_DELETE_SELF && -f $filename && defined $WatchList{$filename}) {
+	$mail_subject   = $filename_is->("replaced");  
+	$syslog_message = "* $mail_subject but watched again";
+	$self->message(0, $ievent->now, $syslog_message);
+	syslog("info", $syslog_message) if($Path->{'syslog'});
+	$inotify->watch ("$filename", $Path->{'mask'}, sub { $self->mywatch(@_); });
     }
-    ## $Path->{'exec'} = qq{echo [$now] p=\%p v=\%v ev=\%e file=\%f c=\%c old-file=\%F};
+
     if(defined($Path->{exec})) {
 	my $command = $ievent->apply_to_command($Path->{exec});
-	$self->message(0, $now, "* Command: $command");
+	$self->message(0, $ievent->now, "* Command: $command");
 	syslog("info","* Command: $command") if($Path->{'syslog'});
-	# We have already backslashed the escape characters in $Filename (in %formats).
+	# We have already backslashed the escape characters in $filename (in %formats).
 	$command =~ /^(.+)$/;
 	return if(!defined($1));
 	my $securecommand = $1;
-	#system("$securecommand");
 	push @{ $self->queue }, $securecommand;
     }
 
-    if(defined($Message) && $Path->{'alert'}) {
-	$Mail{Message} = "[$now]\n$Message";
-	$Mail{To} = $Path->{'contactpoint'};
-	$self->message(0, $now, "* Send email to $Mail{To}");
+    if($Path->{'alert'}) {
+	my $mail_message = sub { return sprintf(qq{[%s] %s %s\n%s}, 
+						$ievent->now, $ievent->name, $filename, "@_");
+	};
+	my $get_subject  = sub { return sprintf(q{[%s] %s: %s}, $PROGRAM, hostname(), "@_"); };
+
+	$Mail{Message} = $mail_message->($syslog_message);
+	$Mail{To}      = $Path->{'contactpoint'};
+	$Mail{Subject} = $get_subject->($mail_subject);
+	$self->message(0, $ievent->now, "* Send email to $Mail{To}");
 	syslog("info","* Send email to $Mail{To}") if($Path->{'syslog'});
 	sendmail(%Mail) or warn $Mail::Sendmail::error;
     }
@@ -766,7 +761,10 @@ sub script_version {
 	exit 0;
     };
 }
+
 exit ( __PACKAGE__->main( @ARGV ) ) unless caller();
+
+1;
 
 =pod
 
@@ -863,3 +861,4 @@ Where options and [defaults] are:
 
 =cut
 
+__DATA__
