@@ -186,15 +186,21 @@ sub getopt_spec {
     $self->{'events'}      = [];
     $self->{'max'}         = 5;
     $self->{'load_metric'} = LOADAVG_1MIN;
+    $self->{'recursive'}   = 0;
+    $self->{'alert'}       = 0;
+    $self->{'use_syslog'}  = 0;
+    $self->{'user'}        = (getpwuid($>))[0];
+    $self->{'email_address'} =
+	join '@', $self->{'user'}, 'localhost';
 
     return (
 	'help|h'       => $self->usage,
-	'config=s'     => \$self->{'configfile'},
-	'command=s'    => \$self->{'command'},
+	'config|f=s'   => \$self->{'configfile'},
+	'command|c=s'  => \$self->{'command'},
 	'charset=s'    => \$self->{'charset'},
 	'daemon|d!'    => \$self->{'daemon'},
 	'event|e=s'    => sub { push @{$self->{'events'}}, split(/,/, $_[1]); },
-	'address|m=s'  => \$self->{'email_address'},
+	'address|m=s'  => sub { $self->{'email_address'} = $_[1]; $self->{'alert'} = 1; },
 	'recurse|r'    => \$self->{'recursive'},
 	'syslog|s!'    => \$self->{'syslog'},
 	'filter|t=s'   => \$self->{'filter_str'},
@@ -210,18 +216,27 @@ sub getopt_spec {
 	);
 }
 
+sub queue               :lvalue { $_[0]->{'queue'};               }
+sub inotify             :lvalue { $_[0]->{'inotify'};             }
+sub inotify_events      :lvalue { $_[0]->{'inotify_events'};      }
+sub inotify_event_names         { $_[0]->{'inotify_event_names'}; }
+sub iwatch                      { $_[0]->{'iwatch'};              }
+sub load_avg                    { $_[0]->{'load_avg'};            }
+
 sub max                         { $_[0]->{'max'};                 }
 sub config_file                 { $_[0]->{'configfile'};          }
 sub daemon                      { $_[0]->{'daemon'};              }
 sub charset                     { $_[0]->{'charset'};             }
 sub verbose                     { $_[0]->{'verbose'};             }
-sub command             :lvalue { $_[0]->{'command'};             }
-sub inotify             :lvalue { $_[0]->{'inotify'};             }
-sub inotify_events      :lvalue { $_[0]->{'inotify_events'};      }
-sub inotify_event_names         { $_[0]->{'inotify_event_names'}; }
-sub iwatch                      { $_[0]->{'iwatch'};              }
-sub queue               :lvalue { $_[0]->{'queue'};               }
-sub load_avg                    { $_[0]->{'load_avg'};            }
+sub command                     { $_[0]->{'command'};             }
+sub email                       { $_[0]->{'email_address'};       }
+sub recursive                   { $_[0]->{'recursive'};           }
+sub watch_events                { $_[0]->{'events'};              }
+sub filter_string               { $_[0]->{'filter_str'};          }
+sub email_alert                 { $_[0]->{'alert'};               }
+sub use_syslog                  { $_[0]->{'syslog'};              }
+sub exception                   { $_[0]->{'exception'};           }
+sub exception_regexp            { $_[0]->{'exception_regexp'};    }
 
 sub update_load {
     my $self = shift;
@@ -235,10 +250,9 @@ sub pid_file {
 }
 
 sub daemonize {
-    my $self = shift;
-    my $ChildPid = fork;
+    my $self     = shift;
     my $pidfile  = $self->pid_file;
-
+    my $ChildPid = fork; ## fork 
     if($ChildPid) {
 	open(FH, '>', "$pidfile") or die "Could not write to pidfile \"$pidfile\": $!";
 	print FH "$ChildPid"; 
@@ -619,7 +633,7 @@ sub mywatch {
 	syslog("info","$localMessage") if($Path->{'syslog'});
 	$inotify->watch ("$Filename", $Path->{'mask'}, sub { $self->mywatch(@_)});
     }
-    $Path->{'exec'} = qq{echo [$now] p=\%p v=\%v ev=\%e file=\%f c=\%c old-file=\%F};
+    ## $Path->{'exec'} = qq{echo [$now] p=\%p v=\%v ev=\%e file=\%f c=\%c old-file=\%F};
     if(defined($Path->{exec})) {
 	my $command = $ievent->apply_to_command($Path->{exec});
 	$self->message(0, $now, "* Command: $command");
@@ -643,30 +657,30 @@ sub mywatch {
 
 sub generate_xml_string {
     my ($self) = @_;
-    my %options;
-    my $user = (getpwuid($>))[0];
+    my $user   = 
     my @xmlstr;
     push @xmlstr, sprintf(q{<config charset="%s">}, $self->charset);
     push @xmlstr, sprintf(q{  <guard email="%s@localhost"/>}, $user);
     push @xmlstr, sprintf(q{  <watchlist>});
-    push @xmlstr, sprintf(q{    <contactpoint email="%s"/>}, ((defined $options{m}) ? 
-							      $options{m}           : 
-							      "$user\@localhost"));
+    push @xmlstr, sprintf(q{    <contactpoint email="%s"/>}, $self->email);
     push @xmlstr, sprintf(q{    <path });
-    push @xmlstr, sprintf(q{       type="%s"}, ((defined $options{r}) ? "recursive" : "single"));
-    push @xmlstr, sprintf(q{     events="%s"}, ((defined $options{e}) ? $options{e} : "default"));
-    push @xmlstr, sprintf(q{       exec="%s"}, $options{c}) if (defined $options{c});
-    push @xmlstr, sprintf(q{      alert="%s"}, ((defined $options{m}) ? "on" : "off"));
-    push @xmlstr, sprintf(q{     syslog="%s"}, ((defined $options{s}) ? "on" : "off"));
-    push @xmlstr, sprintf(q{     filter="%s"}, $options{t}) if (defined $options{t});
-    push @xmlstr, sprintf(q{     >%s</path>}, ((-e $ARGV[0]) ? $ARGV[0] : $options{w}));
-    push @xmlstr, sprintf(q{    <path type="exception">%s</path>}, $options{x})
-	if(defined $options{x});
-    push @xmlstr, sprintf(q{    <path type="regexception">%s</path>}, $options{X})
-	if(defined $options{X});
+    push @xmlstr, sprintf(q{       type="%s"}, ($self->recursive ? "recursive" : "single"));
+    push @xmlstr, sprintf(q{     events="%s"}, 
+			  (@{$self->watch_events} ? join(',', @{$self->watch_events}) : "default"));
+    push @xmlstr, sprintf(q{       exec="%s"}, $self->command) if (defined $self->command);
+    push @xmlstr, sprintf(q{      alert="%s"}, ($self->email_alert ? "on" : "off"));
+    push @xmlstr, sprintf(q{     syslog="%s"}, ($self->use_syslog  ? "on" : "off"));
+    push @xmlstr, sprintf(q{     filter="%s"}, $self->filter_string) 
+	if ($self->filter_string);
+    ## FIX ME - find out what $options{w} was
+    push @xmlstr, sprintf(q{     >%s</path>}, ((-e $ARGV[0]) ? $ARGV[0] : $self->{'w'}));
+    push @xmlstr, sprintf(q{    <path type="exception">%s</path>}, $self->exception)
+	if($self->exception);
+    push @xmlstr, sprintf(q{    <path type="regexception">%s</path>}, $self->exception_regexp)
+	if($self->exception_regexp);
     push @xmlstr, sprintf(q{  </watchlist>});
     push @xmlstr, sprintf(q{</config>});
-    
+
     my $xmlstr = do { local $" = "\n"; "@xmlstr"; };
     print "XMLstr: \n$xmlstr\n" if $VERBOSE > 0;
     return $xmlstr;
@@ -735,7 +749,6 @@ sub usage {
 	exec 'perldoc', '-t', $script;
     }
 }
-
 sub script_version {
     return sub {
 	print "$PROGRAM $VERSION, a realtime filesystem monitor.\n";
@@ -743,7 +756,6 @@ sub script_version {
 	exit 0;
     };
 }
-
 exit ( __PACKAGE__->main( @ARGV ) ) unless caller();
 
 =pod
