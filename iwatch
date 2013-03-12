@@ -648,14 +648,10 @@ sub mywatch {
     }
 
     if($Path->{'alert'}) {
-	my $mail_message = sub { return sprintf(qq{[%s] %s %s\n%s}, 
-						$ievent->now, $ievent->name, $filename, "@_");
-	};
-	my $get_subject  = sub { return sprintf(q{[%s] %s: %s}, $PROGRAM, hostname(), "@_"); };
-
-	$Mail{Message} = $mail_message->($syslog_message);
+	$Mail{Message} = sprintf(qq{[%s] %s %s\n%s}, 
+				 $ievent->now, $ievent->name, $filename, $syslog_message);
 	$Mail{To}      = $Path->{'contactpoint'};
-	$Mail{Subject} = $get_subject->($mail_subject);
+	$Mail{Subject} = sprintf(q{[%s] %s: %s}, $PROGRAM, hostname(), $mail_subject);
 	$self->message(0, $ievent->now, "* Send email to $Mail{To}");
 	syslog("info","* Send email to $Mail{To}") if($Path->{'syslog'});
 	sendmail(%Mail) or warn $Mail::Sendmail::error;
