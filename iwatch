@@ -197,6 +197,7 @@ sub getopt_spec {
     return (
 	'help|h'         => $self->usage,
 	'config|f=s'     => \$self->{'configfile'},
+	'watch|w=s'      => \$self->{'watch_path'},
 	'command|c=s'    => \$self->{'command'},
 	'charset=s'      => \$self->{'charset'},
 	'daemon|d!'      => \$self->{'daemon'},
@@ -240,6 +241,12 @@ sub email_alert                 { $_[0]->{'alert'};               }
 sub use_syslog                  { $_[0]->{'syslog'};              }
 sub exception                   { $_[0]->{'exception'};           }
 sub exception_regexp            { $_[0]->{'exception_regexp'};    }
+
+sub watch_path {
+    my ($self) = @_;
+    my ($path) = grep { defined($_) && -e $_ } $self->{'watch_path'}, @ARGV;
+    return $path;
+}
 
 sub update_load {
     my $self = shift;
@@ -295,7 +302,7 @@ sub main {
     }
     
 
-    if(defined $options{w} || -e $ARGV[0]) {
+    if($self->watch_path) {
 	$VERBOSE  += 1;
 	my $xmlstr = $self->generate_xml_string();
 	$xmlobj    = XML::SimpleObject::LibXML->new (XML => "$xmlstr");
@@ -304,7 +311,7 @@ sub main {
     }
     
     $self->daemonize() if $self->daemon;
-    
+
     my $inotify = $self->inotify = Linux::Inotify2->new();
 
     Event->signal (signal => 'CHLD',
@@ -342,13 +349,15 @@ sub main {
 		       }
 		       $self->xmlDispatch($xmlobj);
 		   })
-	if(!(defined $options{w} || -e $ARGV[0]));
+	if(!($self->watch_path));
 
     my $itrn = 0;
     $self->xmlDispatch($xmlobj);
     Event->io (fd => $inotify->fileno, poll => 'r', cb => sub { $inotify->poll });
     Event->timer(interval => 1, cb => sub { $self->_dispatch_queue(++$itrn);   }); 
     Event::loop;
+
+    return 0; ## time to exit
 }
 
 sub _dispatch_queue {
@@ -674,8 +683,7 @@ sub generate_xml_string {
     push @xmlstr, sprintf(q{     syslog="%s"}, ($self->use_syslog  ? "on" : "off"));
     push @xmlstr, sprintf(q{     filter="%s"}, $self->filter_string) 
 	if ($self->filter_string);
-    ## FIX ME - find out what $options{w} was
-    push @xmlstr, sprintf(q{     >%s</path>}, ((-e $ARGV[0]) ? $ARGV[0] : $self->{'w'}));
+    push @xmlstr, sprintf(q{     >%s</path>}, $self->watch_path);
     push @xmlstr, sprintf(q{    <path type="exception">%s</path>}, $self->exception)
 	if($self->exception);
     push @xmlstr, sprintf(q{    <path type="regexception">%s</path>}, $self->exception_regexp)
