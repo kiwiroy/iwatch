@@ -13,7 +13,7 @@ package iWatch::Utils;
 
 use strict;
 use warnings;
-use Linux::Inotify2;
+use Linux::Inotify2; ## for constants
 
 my $PROGRAM = "iWatch";
 my $VERSION = "0.2.2";
@@ -121,16 +121,19 @@ sub event     :lvalue { $_[0]->{'event'};     }
 package App::iWatch;
 
 use strict;
-use Getopt::Long;
-use Event;
-use Linux::Inotify2;
-use File::Find;
-use Mail::Sendmail;
-use Sys::Hostname;
-use XML::SimpleObject::LibXML;
+use warnings;
+
 use POSIX qw{:signal_h};
+use Event;
+use File::Find;
+use Getopt::Long;
+
+use Linux::Inotify2;
+use Mail::Sendmail;
+use XML::SimpleObject::LibXML;
+use Sys::Hostname;
 use Sys::Syslog;
-use Sys::LoadAvg qw{loadavg};
+use Sys::LoadAvg qw{loadavg LOADAVG_1MIN LOADAVG_5MIN LOADAVG_15MIN};
 
 my $VERBOSE      = 0;
 my $CONFIGFILE_G = "/etc/iwatch.xml";
@@ -167,10 +170,13 @@ sub new {
 
 sub getopt_spec {
     my $self = shift;
-    $self->{'events'} = [];
-    $self->{'max'}    = 5;
+
+    $self->{'events'}      = [];
+    $self->{'max'}         = 5;
+    $self->{'load_metric'} = LOADAVG_1MIN;
+
     return (
-	'help|h'       => sub { $self->usage(); },
+	'help|h'       => $self->usage,
 	'config=s'     => \$self->{'configfile'},
 	'command=s'    => \$self->{'command'},
 	'charset=s'    => \$self->{'charset'},
@@ -181,11 +187,14 @@ sub getopt_spec {
 	'syslog|s!'    => \$self->{'syslog'},
 	'filter|t=s'   => \$self->{'filter_str'},
 	'verbose|v+'   => \$self->{'verbose'},
-	'version'      => \$self->{'version'},
+	'version'      => $self->script_version,
 	'except|x=s'   => \$self->{'exception'},
 	'reg-except=s' => \$self->{'exception_regexp'},
 	'pidfile=s'    => \$self->{'pidfile'},
 	'max=i'        => \$self->{'max'},
+	'1'            => sub { $self->{'load_metric'} = LOADAVG_1MIN;  },
+	'5'            => sub { $self->{'load_metric'} = LOADAVG_5MIN;  },
+	'15'           => sub { $self->{'load_metric'} = LOADAVG_15MIN; },
 	);
 }
 
@@ -247,7 +256,7 @@ sub main {
        (-e $ARGV[0] || defined $options{c} || defined $options{C} || defined $options{e} || defined $options{m} 
 	|| defined $options{r} || defined $options{s} || defined $options{t} || defined $options{w} || defined $options{x} | defined $options{X})) {
 	print STDERR "Options [d|f|p] and [c|e|m|r|s|w|x] are mutually exlusive, you can't mix it!\n";
-	$self->usage();
+	$self->usage->();
     }
     
 
@@ -321,7 +330,7 @@ sub _dispatch_queue {
 sub getXmlObject {
   my ($self, $configFile) = @_;
   if(! -f $configFile) {
-      $self->usage();
+      $self->usage->();
   }
   my $parser = XML::LibXML->new();
   open(CF, '<', $configFile);
@@ -688,19 +697,45 @@ sub _spawn_child {
 }
 
 sub usage {
-  VERSION_MESSAGE();
-  HELP_MESSAGE();
-  exit 0;
+    return sub {
+	$0 =~ m/^(.+)$/;
+	my $script = $1;
+	exec 'perldoc', '-t', $script;
+    }
 }
 
-sub VERSION_MESSAGE {
-  print "$PROGRAM $VERSION, a realtime filesystem monitor.\n";
-  print "Cahya Wirawan <cahya at gmx dot at>, Vienna 2006.\n";
+sub script_version {
+    return sub {
+	print "$PROGRAM $VERSION, a realtime filesystem monitor.\n";
+	print "Cahya Wirawan <cahya at gmx dot at>, Vienna 2006.\n";
+	exit 0;
+    };
 }
 
-sub HELP_MESSAGE {
-  print <<ENDOFHELP;
-  
+
+exit ( __PACKAGE__->main( @ARGV ) ) unless caller();
+
+=pod
+
+=head1 NAME
+
+iwatch - A realtime filesystem monitor
+
+=head1 DESCRIPTION
+
+A realtime filesystem monitor with the ability to filter, notify and execute based
+on filesystem events that are received.
+
+=head1 SYNOPSIS
+
+ iwatch -f iwatch.xml /path/to/monitor
+
+=head1 USAGE DAEMON
+
+ iwatch [options] 
+
+Where options and [defaults] are:
+
 In the daemon mode, $PROGRAM has following options:
 Usage: iwatch [-d] [-f <config file>] [-v] [-p <pid file>]
   -d Execute the application as daemon.
@@ -709,6 +744,12 @@ Usage: iwatch [-d] [-f <config file>] [-v] [-p <pid file>]
   -p <pid file>
      Specify an alternate pid file (default: $PIDFILE_G)
   -v Verbose mode.
+
+=head1 USAGE INTERACTIVE
+
+ iwatch [options]
+
+Where options and [defaults] are:
 
 And in the command line mode:
 Usage: iwatch [-c command] [-C charset] [-e event[,event[,..]]] [-h|--help] [-m <email address>] 
@@ -765,7 +806,6 @@ Usage: iwatch [-c command] [-C charset] [-e event[,event[,..]]] [-h|--help] [-m 
      Specify the file or directory which should not be watched.
   -X <regex string as exception>
      Specify a regex string as exception
-ENDOFHELP
-}
 
-exit ( __PACKAGE__->main( @ARGV ) ) unless caller();
+=cut
+
