@@ -10,6 +10,7 @@ my $build = Module::Build->new(
     dist_version_from  => 'iwatch',
     license            => 'perl',
     create_makefile_pl => 1,
+    script_files       => [ qw{ iwatch } ],
     requires           => {
 	'POSIX'                     => '1.0',
 	'Event'                     => '0.1',
