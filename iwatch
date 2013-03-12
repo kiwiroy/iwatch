@@ -120,7 +120,7 @@ use warnings;
 use POSIX qw{:signal_h};
 use Event;
 use File::Find;
-use Getopt::Long;
+use Getopt::Long qw{GetOptions :config no_ignore_case};
 
 use Linux::Inotify2;
 use Mail::Sendmail;
@@ -184,7 +184,8 @@ sub getopt_spec {
     my $self = shift;
 
     $self->{'events'}      = [];
-    $self->{'max'}         = 5;
+    $self->{'max_child'}   = 5;
+    $self->{'max_load'}    = 20;
     $self->{'load_metric'} = LOADAVG_1MIN;
     $self->{'recursive'}   = 0;
     $self->{'alert'}       = 0;
@@ -194,25 +195,26 @@ sub getopt_spec {
 	join '@', $self->{'user'}, 'localhost';
 
     return (
-	'help|h'       => $self->usage,
-	'config|f=s'   => \$self->{'configfile'},
-	'command|c=s'  => \$self->{'command'},
-	'charset=s'    => \$self->{'charset'},
-	'daemon|d!'    => \$self->{'daemon'},
-	'event|e=s'    => sub { push @{$self->{'events'}}, split(/,/, $_[1]); },
-	'address|m=s'  => sub { $self->{'email_address'} = $_[1]; $self->{'alert'} = 1; },
-	'recurse|r'    => \$self->{'recursive'},
-	'syslog|s!'    => \$self->{'syslog'},
-	'filter|t=s'   => \$self->{'filter_str'},
-	'verbose|v+'   => \$self->{'verbose'},
-	'version'      => $self->script_version,
-	'except|x=s'   => \$self->{'exception'},
-	'reg-except=s' => \$self->{'exception_regexp'},
-	'pidfile=s'    => \$self->{'pidfile'},
-	'max=i'        => \$self->{'max'},
-	'1'            => sub { $self->{'load_metric'} = LOADAVG_1MIN;  },
-	'5'            => sub { $self->{'load_metric'} = LOADAVG_5MIN;  },
-	'15'           => sub { $self->{'load_metric'} = LOADAVG_15MIN; },
+	'help|h'         => $self->usage,
+	'config|f=s'     => \$self->{'configfile'},
+	'command|c=s'    => \$self->{'command'},
+	'charset=s'      => \$self->{'charset'},
+	'daemon|d!'      => \$self->{'daemon'},
+	'event|e=s'      => sub { push @{$self->{'events'}}, split(/,/, $_[1]); },
+	'address|m=s'    => sub { $self->{'email_address'} = $_[1]; $self->{'alert'} = 1; },
+	'recurse|r'      => \$self->{'recursive'},
+	'syslog|s!'      => \$self->{'syslog'},
+	'filter|t=s'     => \$self->{'filter_str'},
+	'verbose|v+'     => \$self->{'verbose'},
+	'version'        => $self->script_version,
+	'except|x=s'     => \$self->{'exception'},
+	'reg-except|X=s' => \$self->{'exception_regexp'},
+	'pidfile=s'      => \$self->{'pidfile'},
+	'max-child=i'    => \$self->{'max_child'},
+	'max-load=i'     => \$self->{'max_load'},
+	'1'              => sub { $self->{'load_metric'} = LOADAVG_1MIN;  },
+	'5'              => sub { $self->{'load_metric'} = LOADAVG_5MIN;  },
+	'15'             => sub { $self->{'load_metric'} = LOADAVG_15MIN; },
 	);
 }
 
@@ -223,7 +225,8 @@ sub inotify_event_names         { $_[0]->{'inotify_event_names'}; }
 sub iwatch                      { $_[0]->{'iwatch'};              }
 sub load_avg                    { $_[0]->{'load_avg'};            }
 
-sub max                         { $_[0]->{'max'};                 }
+sub max_children                { $_[0]->{'max_child'};           }
+sub max_load                    { $_[0]->{'max_load'};            }
 sub config_file                 { $_[0]->{'configfile'};          }
 sub daemon                      { $_[0]->{'daemon'};              }
 sub charset                     { $_[0]->{'charset'};             }
@@ -352,12 +355,12 @@ sub _dispatch_queue {
     my $self  = shift;
     my $itrn  = shift;
     my $queue = $self->queue;
-    my $MAX   = $self->max;
+    my $MAX   = $self->max_children;
     my $last  = ($MAX > @$queue ? @$queue : $MAX);
     my $count = ($CHILDREN_G ? $CHILDREN_G - 1 : $CHILDREN_G);
 
     my $load     = $self->load_avg->[ $self->{'load_metric'} ];
-    my $max_load = 20.0;
+    my $max_load = $self->max_load;
 
     $self->message(0, '-', sprintf("we have %d entries in queue and %d children last=%d, load=%.2f",
 				   scalar(@$queue), $CHILDREN_G, $last, $load));
