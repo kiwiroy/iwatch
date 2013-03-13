@@ -12,8 +12,11 @@ package iWatch;
 
 use strict;
 use warnings;
+use FindBin;
+use File::Spec;
+use File::Basename qw{basename dirname};
 
-my $PROGRAM = "iWatch";
+my $PROGRAM = basename($FindBin::Bin);
 my $VERSION = "0.2.2";
 
 my $VERBOSE      = 0;
@@ -28,7 +31,11 @@ sub new {
     bless { 
 	mail      => {}, 
 	watchlist => {},
-	event     => iWatch::Event->new() 
+	event     => iWatch::Event->new(),
+	installed => $FindBin::Bin,
+	libraries => File::Spec->catdir(dirname($FindBin::Bin), 'lib', 'perl5'),
+	sysconfig => File::Spec->catdir(dirname($FindBin::Bin), 'etc'),
+	volatile  => File::Spec->catdir(qw{/var run}),
     }, $_[0];
 }
 
@@ -36,6 +43,11 @@ sub charset   :lvalue { $_[0]->{'charset'};   }
 sub mail      :lvalue { $_[0]->{'mail'};      }
 sub watchlist :lvalue { $_[0]->{'watchlist'}; }
 sub event     :lvalue { $_[0]->{'event'};     }
+
+sub configfile { return File::Spec->catfile($_[0]->{'sysconfig'}, 'iwatch.xml'); }
+sub pid_file   { return File::Spec->catfile($_[0]->{'volatile'},  'iwatch.pid'); }
+sub dtd_file   { return File::Spec->catfile($_[0]->{'sysconfig'}, 'iwatch.dtd'); }
+sub moduleload { return $_[0]->{'libraries'}; }
 
 1;
 
@@ -121,7 +133,7 @@ use warnings;
 
 use POSIX qw{:signal_h};
 use Event;
-use File::Find;
+use FindBin;
 use Getopt::Long qw{GetOptions :config no_ignore_case};
 
 use Linux::Inotify2;
@@ -296,7 +308,9 @@ sub main {
     if($self->watch_path) {
 	my $xmlstr = $self->generate_xml_string();
 	if ($self->generate_xml) {
-	    print STDOUT "$xmlstr\n";
+	    my $dtd_file = $self->iwatch->dtd_file;
+	    my $xml_head = qq{<?xml version="1.0" ?>\n<!DOCTYPE config SYSTEM "$dtd_file" >};
+	    print STDOUT "$xml_head\n$xmlstr\n";
 	    exit 0;
 	}
 	$xmlobj    = XML::SimpleObject::LibXML->new (XML => "$xmlstr");
@@ -318,7 +332,6 @@ sub main {
 			       or die "Can't block SIGCHLD for reaper: $!\n";
 			   my $pid = wait;
 			   if (delete $CHILDREN_G{$pid}) {
-			       warn "$pid removed\n";
 			       $CHILDREN_G--;
 			   }
 			   sigprocmask(SIG_UNBLOCK, $sigset);

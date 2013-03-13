@@ -10,6 +10,9 @@ my $build = Module::Build->new(
     dist_version_from  => 'iwatch',
     license            => 'perl',
     create_makefile_pl => 1,
+    etc_files          => {
+	'iwatch.dtd' => 'etc/iwatch.dtd',
+    },
     script_files       => [ qw{ iwatch } ],
     requires           => {
 	'POSIX'                     => '1.0',
@@ -26,4 +29,6 @@ my $build = Module::Build->new(
     
     );
 
+$build->add_build_element('etc');
+$build->install_base_relpaths( 'etc' => 'etc');
 $build->create_build_script;
