@@ -8,6 +8,18 @@
 # iWatch monitor any changes in directories/files specified
 # in the configuration file, and send email alert.
 # This program needs inotify in linux kernel >= 2.6.13  
+BEGIN {
+    ## catch missing libraries - compile errors too - uncomment the local avoid
+    use FindBin;
+    delete @ENV{qw(ENV IFS CDPATH)};
+    $ENV{PATH}    = "/bin:/usr/bin:/usr/sbin";
+    ## local
+    $SIG{__DIE__} = sub {
+	$FindBin::Script =~ m/^(.+)$/;
+	print STDERR "$1: @_"; sleep 3;
+	exec 'perldoc', '-t', $1;
+    };
+}
 package iWatch;
 
 use strict;
@@ -16,8 +28,8 @@ use FindBin;
 use File::Spec;
 use File::Basename qw{basename dirname};
 
-my $PROGRAM = $FindBin::Script;
-my $VERSION = "0.2.2";
+(my $PROGRAM = $FindBin::Script) =~ s/^(.+)$/$1/;
+my $VERSION  = "0.2.2";
 
 my $VERBOSE      = 0;
 my $CONFIGFILE_G = "/etc/iwatch.xml";
@@ -143,6 +155,7 @@ use Sys::Hostname;
 use Sys::Syslog;
 use Sys::LoadAvg qw{loadavg LOADAVG_1MIN LOADAVG_5MIN LOADAVG_15MIN};
 
+
 sub new {
     my $class = shift;
     my $self  = bless {
@@ -187,9 +200,6 @@ sub new {
     }
 
     $self->update_load;
-
-    delete @ENV{qw(ENV IFS CDPATH)};
-    $ENV{PATH} = "/bin:/usr/bin:/usr/sbin";
 
     return $self;
 }
@@ -763,6 +773,8 @@ sub script_version {
     };
 }
 
+$SIG{__DIE__} = 'IGNORE';
+
 exit ( __PACKAGE__->main( @ARGV ) ) unless caller();
 
 1;
@@ -781,6 +793,16 @@ on filesystem events that are received.
 =head1 SYNOPSIS
 
  iwatch -f iwatch.xml /path/to/monitor
+
+This script uses taint mode. If there are perl modules installed in a non-standard location
+the paths to these must be specified on the command line thus.
+
+ perl -T -Mlib=/opt/lib/perl5 iwatch [options]
+
+Without this the behaviour of this script will be akin to printing a warning like below
+and showing this documentation.
+
+ Can't locate Event.pm in @INC (@INC contains: ...
 
 =head1 USAGE DAEMON
 
