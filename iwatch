@@ -16,7 +16,7 @@ use FindBin;
 use File::Spec;
 use File::Basename qw{basename dirname};
 
-my $PROGRAM = basename($FindBin::Bin);
+my $PROGRAM = $FindBin::Script;
 my $VERSION = "0.2.2";
 
 my $VERBOSE      = 0;
