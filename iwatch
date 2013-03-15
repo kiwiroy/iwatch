@@ -209,7 +209,7 @@ sub getopt_spec {
 
     $self->{'events'}      = [];
     $self->{'max_child'}   = 5;
-    $self->{'max_load'}    = 20;
+    $self->{'max_load'}    = 80;
     $self->{'write_xml'}   = 0;
     $self->{'load_metric'} = LOADAVG_1MIN;
     $self->{'recursive'}   = 0;
@@ -398,6 +398,10 @@ sub _dispatch_queue {
 	my $cmd = shift @$queue;
 	$self->message(0, '_spawn_child', $cmd);
 	_spawn_child( $cmd );
+    }
+
+    foreach my $pid(keys %CHILDREN_G) {
+	warn "$pid not still active!\n" unless kill 0, $pid;
     }
 
     kill 'CHLD', $$ unless $itrn % 40; ## holes in the block logic / signal impl.
@@ -723,7 +727,7 @@ sub _spawn_child {
         # Parent process code executes from here
         # Parent records the child's birth and returns.
 ###########################################################################################
-        $CHILDREN_G{$pid} = 1;
+        $CHILDREN_G{$pid} = $cmd;
         $CHILDREN_G++;
 
         return;
@@ -745,7 +749,7 @@ sub _spawn_child {
 	open(my $fh, '-|', $cmd);
 	while (<$fh>) {
 	    chomp;
-	    warn "[result] $_\n";
+	    warn "[$$] $_\n";
 	}
 	close $fh;
 
