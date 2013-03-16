@@ -155,6 +155,7 @@ use Sys::Hostname;
 use Sys::Syslog;
 use Sys::LoadAvg qw{loadavg LOADAVG_1MIN LOADAVG_5MIN LOADAVG_15MIN};
 
+my %COUNTER_G;
 
 sub new {
     my $class = shift;
@@ -209,14 +210,16 @@ sub getopt_spec {
 
     $self->{'events'}      = [];
     $self->{'max_child'}   = 5;
-    $self->{'max_load'}    = 20;
+    $self->{'max_load'}    = 80;
     $self->{'write_xml'}   = 0;
+    $self->{'verbose'}     = 0;
     $self->{'load_metric'} = LOADAVG_1MIN;
     $self->{'recursive'}   = 0;
     $self->{'alert'}       = 0;
     $self->{'use_syslog'}  = 0;
     $self->{'user'}        = (getpwuid($>))[0];
-    $self->{'email_address'} =
+    $self->{'compress_queue'} = 1;
+    $self->{'email_address'}  =
 	join '@', $self->{'user'}, 'localhost';
 
     return (
@@ -239,6 +242,7 @@ sub getopt_spec {
 	'pidfile|p=s'    => \$self->{'pidfile'},
 	'max-child=i'    => \$self->{'max_child'},
 	'max-load=i'     => \$self->{'max_load'},
+	'compress|q!'    => \$self->{'compress_queue'},
 	'1'              => sub { $self->{'load_metric'} = LOADAVG_1MIN;  },
 	'5'              => sub { $self->{'load_metric'} = LOADAVG_5MIN;  },
 	'15'             => sub { $self->{'load_metric'} = LOADAVG_15MIN; },
@@ -251,6 +255,7 @@ sub inotify_events      :lvalue { $_[0]->{'inotify_events'};      }
 sub inotify_event_names         { $_[0]->{'inotify_event_names'}; }
 sub iwatch                      { $_[0]->{'iwatch'};              }
 sub load_avg                    { $_[0]->{'load_avg'};            }
+sub compress                    { $_[0]->{'compress_queue'};      }
 
 sub max_children                { $_[0]->{'max_child'};           }
 sub max_load                    { $_[0]->{'max_load'};            }
@@ -312,7 +317,9 @@ sub main {
     my $xmlobj;
 
     GetOptions( $self->getopt_spec );
-    
+
+    $VERBOSE = $self->verbose;
+
     openlog("$PROGRAM", 'cons,pid', 'user');
    
     if($self->watch_path) {
@@ -356,6 +363,11 @@ sub main {
 		       ## HUNTSMAN
 		       local ($SIG{CHLD}) = 'IGNORE';    # we're going to kill our children
 		       kill 'INT' => keys %CHILDREN_G;
+		       print STDERR "\nCapture Stats:\n";
+		       print STDERR join("\n", map 
+					 { 
+					     sprintf(q{%-14s: %d}, $_, $COUNTER_G{$_});
+					 } keys %COUNTER_G), "\n";
 		       exit;                             # clean up with dignity
 		   });
     
@@ -380,10 +392,51 @@ sub main {
     return 0; ## time to exit
 }
 
+sub counter_add {
+    my ($self, $key) = @_;
+    return ++$COUNTER_G{$key};
+}
+
+sub compressed_queue {
+    my $self = shift;
+    
+    if ($self->compress) {
+	my $queue = $self->queue;
+	my (%by_cmd, %seen);
+	my %running = reverse %CHILDREN_G;
+	my @run_idx;
+	for(my $i = 0; $i < @$queue; ++$i) {
+	    my $cmd  = $queue->[$i];
+	    $by_cmd{$cmd} ||= [];
+	    push @{$by_cmd{$cmd}}, $i;
+	    if (my $pid = $running{$cmd}) {
+		$self->message(-1, $i, "running ($pid) $cmd");
+		push @run_idx, $i;
+	    }
+	}
+	## actually compress. we keep the most recent entry to the queue - based
+	## on the fact it should be the most recent event
+	my @multiple       = grep { scalar(@$_) > 1 } values %by_cmd;
+	my @compressed_idx = sort { $a <=> $b } map  { $_->[$#$_] } values %by_cmd;
+	# @compressed_idx  = grep { not $seen{$_}++ } @compressed_idx, @run_idx;
+	if (1) {
+	    my @all_multiple = (sort { $a <=> $b } 
+				map  { @$_[0..($#$_ - 1)] } @multiple);
+	    $self->counter_add('queue_prune') for @all_multiple;
+	    $self->message(1, '-idx', "@all_multiple")      if @all_multiple;
+	    $self->message(1, '-idx', "@run_idx (running)") if @run_idx;
+	    $self->message(1, '+idx', "@compressed_idx")    if @compressed_idx;
+	}
+	$self->queue = [ @$queue[@compressed_idx] ];
+    }
+
+    return $self->queue;
+}
+
 sub _dispatch_queue {
     my $self  = shift;
     my $itrn  = shift;
-    my $queue = $self->queue;
+    my $queue = $self->compressed_queue;
     my $MAX   = $self->max_children;
     my $last  = ($MAX > @$queue ? @$queue : $MAX);
     my $count = ($CHILDREN_G ? $CHILDREN_G - 1 : $CHILDREN_G);
@@ -397,10 +450,14 @@ sub _dispatch_queue {
     for(my $i = $count; $load < $max_load && $i < $last; ++$i) {
 	my $cmd = shift @$queue;
 	$self->message(0, '_spawn_child', $cmd);
-	_spawn_child( $cmd );
+	$self->_spawn_child( $cmd );
     }
 
-    kill 'CHLD', $$ unless $itrn % 40; ## holes in the block logic / signal impl.
+    foreach my $pid(keys %CHILDREN_G) {
+	$self->message(-1, 'x', "$pid not still active!") unless kill 0, $pid;
+    }
+
+    ## kill 'CHLD', $$ unless $itrn % 30; ## holes in the block logic / signal impl.
 
     $self->update_load unless $itrn % 120; ## 2 minutes ~ish
 }
@@ -616,6 +673,8 @@ sub mywatch {
 
     return if(!($Path->{'mask'} & $mask));
 
+    $self->counter_add('event');
+
     my $filename_is  = sub { return "$filename is @_"; };
 
     if($e->IN_CLOSE_WRITE && -f $filename) {
@@ -662,6 +721,7 @@ sub mywatch {
 	$command =~ /^(.+)$/;
 	return if(!defined($1));
 	my $securecommand = $1;
+	$self->counter_add('queue_command');
 	push @{ $self->queue }, $securecommand;
     }
 
@@ -706,12 +766,13 @@ sub generate_xml_string {
 }
 
 sub _spawn_child {
-    my $cmd = shift;
+    my $self = shift;
+    my $cmd  = shift;
     my $pid;
     my $sigset  = POSIX::SigSet->new(&POSIX::SIGINT);
     $sigset->addset(&POSIX::SIGHUP);
     my $sigset2 = POSIX::SigSet->new(&POSIX::SIGHUP);
-
+    $self->counter_add('fork');
     # block 'INT' signal during fork
     sigprocmask(SIG_BLOCK, $sigset) or die "Can't block SIGINT for fork: $!\n";
     die "fork failed: $!" unless defined($pid = fork);
@@ -723,7 +784,7 @@ sub _spawn_child {
         # Parent process code executes from here
         # Parent records the child's birth and returns.
 ###########################################################################################
-        $CHILDREN_G{$pid} = 1;
+        $CHILDREN_G{$pid} = $cmd;
         $CHILDREN_G++;
 
         return;
@@ -742,10 +803,11 @@ sub _spawn_child {
 	sigprocmask(SIG_BLOCK, $sigset_CHLD)
 	    or die "Can't block SIGCHLD while running command: $!\n";
 
+	## sleep int(rand(15)); ## useful for debugging different length processes
 	open(my $fh, '-|', $cmd);
 	while (<$fh>) {
 	    chomp;
-	    warn "[result] $_\n";
+	    $self->message(-1, $$, $_);
 	}
 	close $fh;
 
