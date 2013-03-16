@@ -146,6 +146,7 @@ use warnings;
 use POSIX qw{:signal_h :sys_wait_h};
 use Event;
 use FindBin;
+use File::Basename qw{dirname};
 use Getopt::Long qw{GetOptions :config no_ignore_case};
 
 use Linux::Inotify2;
@@ -295,14 +296,20 @@ sub pid_file {
 sub daemonize {
     my $self     = shift;
     my $pidfile  = $self->pid_file;
+    my $piddir   = dirname($pidfile);
+
     if (-e $pidfile) {
 	open(my $fh, '<', $pidfile);
 	my $pid = <$fh>;
 	close $fh;
-	$self->message(-1, 'ERROR', "$pidfile exists! kill -9 $pid, remove file and restart");
+	$self->message(-1, 'FATAL', "$pidfile exists! kill -9 $pid, remove file and restart");
 	exit 1;
     }
-
+    if (not -w $piddir) {
+	$self->message(-1, 'FATAL', "$piddir not writeable $pidfile cannot be written");
+	exit 1;
+    }
+    ## all is good for forking...
     my $ChildPid = fork; ## fork 
     if($ChildPid) {
 	open(FH, '>', "$pidfile") or die "Could not write to pidfile \"$pidfile\": $!";
@@ -312,7 +319,8 @@ sub daemonize {
     
     die "Can't fork: $!\n" if(!defined $ChildPid);
     exit if($ChildPid);
-    
+    ## child from here...
+    $self->message(-1, '*', 'Daemon started');
     POSIX::setsid() or die "Can't start a new session: $!";
     open STDIN, "</dev/null";
     open STDOUT, ">/dev/null";
@@ -454,7 +462,7 @@ sub _dispatch_queue {
     my $load     = $self->load_avg->[ $self->{'load_metric'} ];
     my $max_load = $self->max_load;
 
-    $self->message(0, '-', sprintf("we have %d entries in queue and %d children last=%d, load=%.2f",
+    $self->message(1, '*', sprintf("we have %d entries in queue and %d children last=%d, load=%.2f",
 				   scalar(@$queue), $CHILDREN_G, $last, $load));
 
     for(my $i = $count; $load < $max_load && $i < $last; ++$i) {
@@ -566,11 +574,8 @@ sub pathwatch {
 	    return if("$path" =~ /$key/);
 	}
 	if($mode eq "single") {
-	    if($VERBOSE>1) {
-		print "Watch $path\n";
-		syslog("info","Watch $path");
-	    }
-	    print STDERR "Can't watch $path: $!\n"
+	    $self->message(1, '*', "Watch $path");
+	    $self->message(-1, '!', "Can't watch $path: $!")
 		if(!$inotify->watch ("$path", $mask, sub { $self->mywatch( @_ ); }));
 	} elsif($mode eq "recursive") {
 	    #File::Find::find({wanted => \&wanted, "no_chdir" => 1}, "$path");
@@ -595,11 +600,8 @@ sub wanted {
 	    return if("$File::Find::name" =~ /$key/);
 	}
 	#return if(!defined(getWatchList($File::Find::name)));
-	if($VERBOSE>1) {
-	    print "Watch $File::Find::name\n";
-	    syslog("info","Watch $File::Find::name");
-	}
-	print STDERR "Can't watch $File::Find::name: $!\n"
+	$self->message(1, '*', "Watch $File::Find::name");
+	$self->message(-1, '!', "Can't watch $File::Find::name: $!")
 	    if(!$inotify->watch ("$File::Find::name", $mask, sub { $self->mywatch(@_) }));
     }
 }
@@ -636,7 +638,11 @@ sub getWatchList {
 sub message {
     my $self  = shift;
     my $level = shift;
-    printf STDERR "[%s] %s\n", @_[0..1] if $VERBOSE > $level;
+    if($VERBOSE > $level){
+	my $message = sprintf "[%s] %s", @_[0..1];
+	print STDERR "$message\n";
+	syslog('info', $message) if $self->use_syslog;
+    }
 }
 
 sub mywatch {
@@ -655,6 +661,11 @@ sub mywatch {
     return if(defined $WatchList{"exception"}{$filename});
     my $Path = $self->getWatchList($e->{w}->{name}, $e->{name}, \%WatchList);
     return if(!defined($Path));
+
+    my $setting  = $self->use_syslog;
+    my $pathlog  = $Path->{'syslog'};
+    my $setlocal = sub { $self->{'use_syslog'} = $pathlog; };
+    my $restore  = sub { $self->{'use_syslog'} = $setting; };
   
     $mask = $e->mask;
     if($e->IN_ISDIR) {
@@ -669,16 +680,18 @@ sub mywatch {
     $ievent->name  .= $self->inotify_event_names->{$mask};
     $ievent->cookie = $e->{cookie};
 
-    if($VERBOSE>0 && $Path->{'mask'} & $mask) {
+    if($Path->{'mask'} & $mask) {
 	my $message = sprintf q{%s %s}, $ievent->name, $filename;
-	$self->message(-1, $ievent->now, $message);
-	syslog("info", $message) if($Path->{'syslog'});
+	$setlocal->();
+	$self->message(0, $ievent->now, $message);
+	$restore->();
     }
     if($e->IN_CREATE && -d $filename && $Path->{'type'} eq "recursive") {
+	$setlocal->();
 	$self->message(0, $ievent->now, "* Directory $filename is watched");
-	syslog("info","* Directory $filename is watched") if($Path->{'syslog'});
 	$self->message(-1, $ievent->now, "Can't watch $filename: $!")
 	    if(!$inotify->watch ($filename, $Path->{'mask'} | $InotifyEvents{'create'}, sub { $self->mywatch(@_) }));
+	$restore->();
     }
 
     return if(!($Path->{'mask'} & $mask));
@@ -690,25 +703,28 @@ sub mywatch {
     if($e->IN_CLOSE_WRITE && -f $filename) {
 	$mail_subject   = $filename_is->("changed");  
 	$syslog_message = "* $mail_subject";
+	$setlocal->();
 	$self->message(0, $ievent->now, $syslog_message);
-	syslog("info","$syslog_message") if($Path->{'syslog'});
+	$restore->();
     } elsif($e->IN_DELETE) {
 	$mail_subject   = $filename_is ->("deleted");
 	$syslog_message = "* $mail_subject";
+	$setlocal->();
 	$self->message(0, $ievent->now, $syslog_message);
-	syslog("info","$syslog_message") if($Path->{'syslog'});
+	$restore->();
     } elsif($e->IN_MOVED_FROM || $e->IN_MOVED_TO) {
 	if($e->IN_MOVED_FROM) {
 	    ## store the old filename
 	    $ievent->cookie = $e->{'cookie'};
 	    $ievent->handle_moved_from();
 	} elsif($e->IN_MOVED_TO) {
+	    $setlocal->();
 	    $self->message(0, $ievent->now, sprintf "* cookie is %d", $e->{'cookie'});
 	    my $old_filename = $ievent->handle_moved_to;
 	    $mail_subject    = sprintf(q{%s is moved to %s}, $old_filename, $filename);
 	    $syslog_message  = "* $mail_subject";
 	    $self->message(0, $ievent->now, $syslog_message);
-	    syslog("info","$syslog_message") if($Path->{'syslog'});
+	    $restore->();
 	    if($e->IN_ISDIR) {
 		our $mask;
 		$mask = ($Path->{'type'} eq "recursive")? $Path->{'mask'} | $InotifyEvents{'create'} : $Path->{'mask'};
@@ -718,15 +734,17 @@ sub mywatch {
     } elsif($e->IN_DELETE_SELF && -f $filename && defined $WatchList{$filename}) {
 	$mail_subject   = $filename_is->("replaced");  
 	$syslog_message = "* $mail_subject but watched again";
+	$setlocal->();
 	$self->message(0, $ievent->now, $syslog_message);
-	syslog("info", $syslog_message) if($Path->{'syslog'});
+	$restore->();
 	$inotify->watch ("$filename", $Path->{'mask'}, sub { $self->mywatch(@_); });
     }
 
     if(defined($Path->{exec})) {
 	my $command = $ievent->apply_to_command($Path->{exec});
+	$setlocal->();
 	$self->message(0, $ievent->now, "* Command: $command");
-	syslog("info","* Command: $command") if($Path->{'syslog'});
+	$restore->();
 	# We have already backslashed the escape characters in $filename (in %formats).
 	$command =~ /^(.+)$/;
 	return if(!defined($1));
@@ -740,9 +758,10 @@ sub mywatch {
 				 $ievent->now, $ievent->name, $filename, $syslog_message);
 	$Mail{To}      = $Path->{'contactpoint'};
 	$Mail{Subject} = sprintf(q{[%s] %s: %s}, $PROGRAM, hostname(), $mail_subject);
+	$setlocal->();
 	$self->message(0, $ievent->now, "* Send email to $Mail{To}");
-	syslog("info","* Send email to $Mail{To}") if($Path->{'syslog'});
-	sendmail(%Mail) or warn $Mail::Sendmail::error;
+	sendmail(%Mail) or $self->message(-1, '!', $Mail::Sendmail::error);
+	$restore->();
     }
 }
 
@@ -771,7 +790,7 @@ sub generate_xml_string {
     push @xmlstr, sprintf(q{</config>});
 
     my $xmlstr = do { local $" = "\n"; "@xmlstr"; };
-    print "XMLstr: \n$xmlstr\n" if $VERBOSE > 0;
+
     return $xmlstr;
 }
 
