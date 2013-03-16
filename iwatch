@@ -481,22 +481,21 @@ sub _dispatch_queue {
 }
 
 sub getXmlObject {
-  my ($self, $configFile) = @_;
-  if(! -f $configFile) {
-      $self->usage->();
-  }
-  my $parser = XML::LibXML->new();
-  open(CF, '<', $configFile);
-  if(<CF> =~ /^<\?xml/) {
-    $parser->validation(1);
-  }
-  else {
-    print STDERR "Please use DTD for xml validation!\n";
-    $parser->validation(0);
-  }
-  close(CF);
-  my $xmlobj = XML::SimpleObject::LibXML ->new($parser->parse_file("$configFile"));
-  return $xmlobj;
+    my ($self, $configFile) = @_;
+    if(! -f $configFile) {
+	$self->usage->();
+    }
+    my $parser = XML::LibXML->new();
+    open(my $cf, '<', $configFile);
+    if(<$cf> =~ /^<\?xml/) {
+	$parser->validation(1);
+    } else {
+	print STDERR "Please use DTD for xml validation!\n";
+	$parser->validation(0);
+    }
+    close($cf);
+    my $xmlobj = XML::SimpleObject::LibXML ->new($parser->parse_file("$configFile"));
+    return $xmlobj;
 }
 
 sub xmlDispatch {
@@ -508,38 +507,38 @@ sub xmlDispatch {
     my %InotifyEvents = %{ $self->inotify_events };
 
     $iwatch->charset = $xmlobj->child("config")->attribute("charset");
-		my $inotify = $self->inotify;
-  foreach my $watchlist ($xmlobj->child("config")->children("watchlist")) {
-    foreach my $path ($watchlist->children("path")) {
-      next if($path->attribute("type") ne "exception" &&
-        $path->attribute("type") ne "regexception");
-      if(-d $path->value) { $_ = $path->value; s/(.+)\/$/$1/; $path->value($_);}
-      $WatchList{$path->attribute("type")}{$path->value}{"type"} = $path->attribute("type");
+    my $inotify = $self->inotify;
+    foreach my $watchlist ($xmlobj->child("config")->children("watchlist")) {
+	foreach my $path ($watchlist->children("path")) {
+	    next if($path->attribute("type") ne "exception" &&
+		    $path->attribute("type") ne "regexception");
+	    if(-d $path->value) { $_ = $path->value; s/(.+)\/$/$1/; $path->value($_);}
+	    $WatchList{$path->attribute("type")}{$path->value}{"type"} = $path->attribute("type");
+	}
     }
-  }
-
-  foreach my $watchlist ($xmlobj->child("config")->children("watchlist")) {
-    foreach my $path ($watchlist->children("path")) {
-      next if($path->attribute("type") eq "exception" ||
-        $path->attribute("type") eq "regexception");
-      if(-d $path->value) { $_ = $path->value; s/(.+)\/$/$1/; $path->value($_);}
-      $WatchList{$path->attribute("type")}{$path->value}{"contactpoint"} = 
-        $watchlist->child("contactpoint")->attribute("email") if(defined($watchlist->child("contactpoint")));
-      $WatchList{$path->attribute("type")}{$path->value}{"exec"} = $path->attribute("exec") if(defined($path->attribute("exec")));
-      $WatchList{$path->attribute("type")}{$path->value}{"alert"} = 
-        (defined($path->attribute("alert")) && $path->attribute("alert") eq "off") ? 0:1;
-      $WatchList{$path->attribute("type")}{$path->value}{"type"} = $path->attribute("type");
-      $WatchList{$path->attribute("type")}{$path->value}{"syslog"} =
-        (defined($path->attribute("syslog")) && $path->attribute("syslog") eq "on") ? 1:0;
-      $WatchList{$path->attribute("type")}{$path->value}{"filter"} = $path->attribute("filter");
-
-      our $mask;
-      $mask = (defined($path->attribute("events"))) ? $self->getMask($path->attribute("events"), \%InotifyEvents) : $InotifyEvents{'default'};
-      $WatchList{$path->attribute("type")}{$path->value}{"mask"} = $mask;
-      $mask |= $InotifyEvents{'create'} if($path->attribute("type") eq "recursive") . "\n";
-      $self->pathwatch($path->attribute("type"), $path->value, %WatchList); 
+    
+    foreach my $watchlist ($xmlobj->child("config")->children("watchlist")) {
+	foreach my $path ($watchlist->children("path")) {
+	    next if($path->attribute("type") eq "exception" ||
+		    $path->attribute("type") eq "regexception");
+	    if(-d $path->value) { $_ = $path->value; s/(.+)\/$/$1/; $path->value($_);}
+	    $WatchList{$path->attribute("type")}{$path->value}{"contactpoint"} = 
+		$watchlist->child("contactpoint")->attribute("email") if(defined($watchlist->child("contactpoint")));
+	    $WatchList{$path->attribute("type")}{$path->value}{"exec"} = $path->attribute("exec") if(defined($path->attribute("exec")));
+	    $WatchList{$path->attribute("type")}{$path->value}{"alert"} = 
+		(defined($path->attribute("alert")) && $path->attribute("alert") eq "off") ? 0:1;
+	    $WatchList{$path->attribute("type")}{$path->value}{"type"} = $path->attribute("type");
+	    $WatchList{$path->attribute("type")}{$path->value}{"syslog"} =
+		(defined($path->attribute("syslog")) && $path->attribute("syslog") eq "on") ? 1:0;
+	    $WatchList{$path->attribute("type")}{$path->value}{"filter"} = $path->attribute("filter");
+	    
+	    our $mask;
+	    $mask = (defined($path->attribute("events"))) ? $self->getMask($path->attribute("events"), \%InotifyEvents) : $InotifyEvents{'default'};
+	    $WatchList{$path->attribute("type")}{$path->value}{"mask"} = $mask;
+	    $mask |= $InotifyEvents{'create'} if($path->attribute("type") eq "recursive") . "\n";
+	    $self->pathwatch($path->attribute("type"), $path->value, %WatchList); 
+	}
     }
-  }
     $Mail{From} = $xmlobj->child("config")->child("guard")->attribute("email");
     $Mail{'Content-Type'} = sprintf q{text/plain; charset=%s}, $iwatch->charset
 	if(defined $iwatch->charset);
