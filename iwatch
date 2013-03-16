@@ -312,9 +312,9 @@ sub daemonize {
     ## all is good for forking...
     my $ChildPid = fork; ## fork 
     if($ChildPid) {
-	open(FH, '>', "$pidfile") or die "Could not write to pidfile \"$pidfile\": $!";
-	print FH "$ChildPid"; 
-	close FH; 
+	open(my $fh, '>', "$pidfile") or die "Could not write to pidfile \"$pidfile\": $!";
+	print $fh "$ChildPid"; 
+	close $fh; 
     }
     
     die "Can't fork: $!\n" if(!defined $ChildPid);
