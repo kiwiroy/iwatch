@@ -286,7 +286,7 @@ sub update_load {
 
 sub pid_file { 
     my $p;
-    ($p = $_[0]->{'pidfile'}) =~ /^(.+)$/; ## untaint
+    ($p = $_[0]->{'pidfile'}) =~ s/^(.+)$/$1/; ## untaint
     return $p;  
 }
 
