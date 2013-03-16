@@ -143,7 +143,7 @@ package App::iWatch;
 use strict;
 use warnings;
 
-use POSIX qw{:signal_h};
+use POSIX qw{:signal_h :sys_wait_h};
 use Event;
 use FindBin;
 use Getopt::Long qw{GetOptions :config no_ignore_case};
@@ -334,18 +334,21 @@ sub main {
 
     Event->signal (signal => 'CHLD',
 		   cb     => sub {
-		       my $event = shift;
 		       ## REAPER
-		       for(my $i = 0; $i < $event->hits; ++$i) {
-			   my $sigset = POSIX::SigSet->new(&POSIX::SIGCHLD);
-			   sigprocmask(SIG_BLOCK, $sigset)
-			       or die "Can't block SIGCHLD for reaper: $!\n";
-			   my $pid = wait;
-			   if (delete $CHILDREN_G{$pid}) {
+		       my $event = shift;
+		       my $pid   = 0;
+		       do {
+			   $pid = waitpid -1, WNOHANG;
+			   if(my $cmd = delete $CHILDREN_G{$pid}) {
+			       warn "[zombie] $pid gone ($cmd)=$?\n";
+			       __PACKAGE__->counter_add('zombie');
 			       $CHILDREN_G--;
 			   }
-			   sigprocmask(SIG_UNBLOCK, $sigset);
-		       }
+			   if($pid > 0 && $? != 0) {
+			       warn "[zombie] $pid $? - sleeping to recover\n";
+			       sleep 5 if $? != 0;
+			   }
+		       } while $pid > 0;
 		   });
 
     Event->signal (signal => 'INT',
