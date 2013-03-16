@@ -286,13 +286,23 @@ sub update_load {
 
 sub pid_file { 
     my $p;
-    ($p = $_[0]->{'pidfile'}) =~ s/^(.+)$/$1/; ## untaint
+    ($p = $_[0]->{'pidfile'}) =~ m!^(/[-\w./]+)$!; ## untaint
+    $p = $1;
+    warn "Bad pid file ", $_[0]->{'pidfile'}, "\n" unless $p;
     return $p;  
 }
 
 sub daemonize {
     my $self     = shift;
     my $pidfile  = $self->pid_file;
+    if (-e $pidfile) {
+	open(my $fh, '<', $pidfile);
+	my $pid = <$fh>;
+	close $fh;
+	$self->message(-1, 'ERROR', "$pidfile exists! kill -9 $pid, remove file and restart");
+	exit 1;
+    }
+
     my $ChildPid = fork; ## fork 
     if($ChildPid) {
 	open(FH, '>', "$pidfile") or die "Could not write to pidfile \"$pidfile\": $!";
