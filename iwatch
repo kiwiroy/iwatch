@@ -231,7 +231,7 @@ sub getopt_spec {
 	'command|c=s'    => \$self->{'command'},
 	'charset=s'      => \$self->{'charset'},
 	'daemon|d!'      => \$self->{'daemon'},
-	'event|e=s'      => sub { push @{$self->{'events'}}, split(/,/, $_[1]); },
+	'event|e=s'      => sub { push @{$self->{'events'}}, split(/,/, lc($_[1])); },
 	'address|m=s'    => sub { $self->{'email_address'} = $_[1]; $self->{'alert'} = 1; },
 	'recurse|r'      => \$self->{'recursive'},
 	'syslog|s!'      => \$self->{'syslog'},
