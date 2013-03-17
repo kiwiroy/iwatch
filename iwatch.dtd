@@ -7,8 +7,7 @@
    email  CDATA #REQUIRED
    name   CDATA #IMPLIED
 >
-<!ELEMENT watchlist (title,contactpoint,path+)>
-<!ELEMENT title (#PCDATA)>
+<!ELEMENT watchlist (contactpoint,path+)>
 <!ELEMENT contactpoint (#PCDATA)>
 <!ATTLIST contactpoint
    email  CDATA #REQUIRED

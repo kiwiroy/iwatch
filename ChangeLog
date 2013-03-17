@@ -1,4 +1,11 @@
 iWatch: Realtime filesystem monitor
+version app-style
+* Changes/New Features/Regressions:
+	- Regressed some of the command line options
+	- Added queuing and forking model to address concurrency worries
+	- Objectify code - main cause of regression, but global variables
+	reduced and code feels cleaner.
+	- Upgrade to Getopt::Long
 
 version 0.2.2 (8. November 2009)
 * Changes/New Features:
