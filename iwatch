@@ -29,7 +29,7 @@ use File::Spec;
 use File::Basename qw{basename dirname};
 
 (my $PROGRAM = $FindBin::Script) =~ s/^(.+)$/$1/;
-my $VERSION  = "0.2.2";
+my $VERSION  = "1.0";
 
 my $VERBOSE      = 0;
 my $CONFIGFILE_G = "/etc/iwatch.xml";
