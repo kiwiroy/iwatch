@@ -245,6 +245,7 @@ sub getopt_spec {
 	'max-child=i'    => \$self->{'max_child'},
 	'max-load=i'     => \$self->{'max_load'},
 	'stop'           => sub { $self->{'control'} = 'stop'; },
+	'reconfig'       => sub { $self->{'control'} = 'conf'; },
 	'compress|q!'    => \$self->{'compress_queue'},
 	'1'              => sub { $self->{'load_metric'} = LOADAVG_1MIN;  },
 	'5'              => sub { $self->{'load_metric'} = LOADAVG_5MIN;  },
@@ -294,33 +295,47 @@ sub pid_file {
     warn "Bad pid file ", $_[0]->{'pidfile'}, "\n" unless $p;
     return $p;  
 }
+
 sub control {
     my $self    = shift;
-    my $pidfile = $self->pid_file;
     if ($self->{'control'} eq 'stop') {
-	if (-e $pidfile && -r $pidfile) {
-	    open(my $fh, '<', $pidfile);
-	    my $pid = <$fh>;
-	    close $fh;
-	    $pid =~ m/(\d+)/;
-	    $pid = $1 or die "PID file '$pidfile' does not contain a valid PID\n";
-	    if (not kill 0, $pid) {
-		$self->message(-1, 'FATAL', "Daemon with $pid not running - removing '$pidfile'");
-		unlink $pidfile;
-		exit 1;
-	    }
-	    if (kill KILL => $pid) {
-		$self->message(-1, 'STOP', "Running daemon with $pid stopped");
-		unlink $pidfile;
-	    } else {
-		$self->message(-1, 'FATAL', "Running daemon with $pid could not be stopped");
-	    }
-	} else {
-	    $self->message(-1, 'FATAL', "No PID file at '$pidfile'");
-	}
+	my $pidfile = $self->pid_file;
+	my $done    = $self->_read_pid_send_action_signal('stopped', 'KILL');
+	unlink $pidfile if $done;
+	exit 0;
+    } elsif ($self->{'control'} eq 'conf') {
+	$self->_read_pid_send_action_signal('reconfigured', 'HUP');
 	exit 0;
     }
 }
+
+sub _read_pid_send_action_signal {
+    my ($self, $action, $signal) = @_;
+    my $retval  = 0;
+    my $pidfile = $self->pid_file;
+    if (-e $pidfile && -r $pidfile) {
+	open(my $fh, '<', $pidfile);
+	my $pid = <$fh>;
+	close $fh;
+	$pid =~ m/(\d+)/;
+	$pid = $1 or die "PID file '$pidfile' does not contain a valid PID\n";
+	if (not kill 0, $pid) {
+	    $self->message(-1, 'FATAL', "Daemon with $pid not running - removing '$pidfile'");
+	    unlink $pidfile;
+	    exit 1;
+	}
+	if (kill $signal => $pid) {
+	    $self->message(-1, 'SIGNAL', "Running daemon with $pid $action");
+	    $retval = 1;
+	} else {
+	    $self->message(-1, 'FATAL', "Running daemon with $pid could not be $action");
+	}
+    } else {
+	$self->message(-1, 'FATAL', "No PID file at '$pidfile'");
+    }
+    return $retval;
+}
+
 sub daemonize {
     my $self     = shift;
     my $pidfile  = $self->pid_file;
